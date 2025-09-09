@@ -198,23 +198,31 @@ if col_barrote and val_barrote is not None:
 if col_regua and val_regua is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
 
-# --- Filtro Cota (cm) com vírgula e robusto a unidade (cm vs m) ---
+# --- Filtro Cota (cm) CORRIGIDO ---
 val_cota_cm = parse_br_number(val_cota_cm_txt)
 if val_cota_cm is not None:
     if col_cota_cm_col:
-        s = to_num(filtered[col_cota_cm_col])  # já em cm
-        s_r2 = s.round(2)
-        # usuário pode ter digitado em cm (143,22) ou m por engano (-> *100)
-        targets = { round(val_cota_cm, 2), round(val_cota_cm * 100.0, 2) }
-        filtered = filtered[s_r2.isin(targets)]
+        # Converte a coluna para numérico, tratando vírgulas decimais
+        s = (filtered[col_cota_cm_col].astype(str)
+               .str.replace(".", "", regex=False)  # remove separador de milhar
+               .str.replace(",", ".", regex=False)  # substitui vírgula por ponto
+               .str.strip())
+        s = pd.to_numeric(s, errors='coerce')
+        
+        # Busca o valor exato (com tolerância para arredondamentos)
+        filtered = filtered[np.isclose(s, val_cota_cm, atol=0.01, rtol=0)]
+        
     elif col_cota_m_col:
-        s_m = to_num(filtered[col_cota_m_col])          # em m
-        s_cm_r2 = (s_m * 100.0).round(2)
-        s_m_r2  = s_m.round(2)
-        target_cm = round(val_cota_cm, 2)               # assume entrada em cm
-        target_m  = round(val_cota_cm / 100.0, 2)       # fallback se entrada estiver em m
-        mask = (s_cm_r2 == target_cm) | (s_m_r2 == target_m)
-        filtered = filtered[mask]
+        # Se tiver apenas Cota (m), converte para cm para comparação
+        s_m = (filtered[col_cota_m_col].astype(str)
+                 .str.replace(".", "", regex=False)
+                 .str.replace(",", ".", regex=False)
+                 .str.strip())
+        s_m = pd.to_numeric(s_m, errors='coerce')
+        s_cm = s_m * 100.0  # converte metros para centímetros
+        
+        # Busca o valor em cm (com tolerância)
+        filtered = filtered[np.isclose(s_cm, val_cota_cm, atol=0.01, rtol=0)]
 
 # =========================
 # KPIs (pegam a 1ª linha dos dados filtrados)
