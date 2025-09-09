@@ -88,7 +88,7 @@ def load_data(sheet_url: str):
     raise RuntimeError(f"Não foi possível baixar o CSV do Google Sheets. Último erro: {last_err}")
 
 # =========================
-# Formatações BR
+# Formatação BR / utilitários
 # =========================
 def fmt_br_2casas(x):
     if pd.isna(x): 
@@ -108,6 +108,20 @@ def fmt_br_pct(x):
 def to_num(s):
     return pd.to_numeric(s, errors="coerce")
 
+def parse_br_number(txt: str) -> float | None:
+    """Converte '143,22' ou '1.234,5' -> 143.22 / 1234.5. Retorna None se vazio/ inválido."""
+    if txt is None: 
+        return None
+    s = str(txt).strip()
+    if s == "": 
+        return None
+    # remove espaços, pontos de milhar e troca vírgula por ponto
+    s = s.replace(" ", "").replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
 # =========================
 # Carrega dados
 # =========================
@@ -119,7 +133,7 @@ st.markdown(
     """
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
-  preencha <b>Barrote</b>, <b>Régua (cm)</b> e <b>Cota (cm)</b> (digitando) para localizar a(s) linha(s) exata(s).
+  preencha <b>Barrote</b>, <b>Régua (cm)</b> e digite <b>Cota (cm)</b> (ex.: 143,22) para localizar a(s) linha(s) exata(s).
   Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
@@ -165,31 +179,12 @@ with c2:
     val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
 
 with c3:
-    # Cota (cm) DIGITÁVEL com o MESMO PADRÃO da coluna Cota (cm).
-    # Se a base tiver Cota (cm), detectamos se tem decimais; se não, usamos 0 casas.
-    if col_cota_cm_col:
-        serie_cm = to_num(df[col_cota_cm_col])
-    elif col_cota_m_col:
-        # se só existir Cota (m), convertemos para cm apenas para "espelhar" o padrão
-        serie_cm = to_num(df[col_cota_m_col]) * 100.0
-    else:
-        serie_cm = pd.Series(dtype=float)
-
-    # checa se a coluna possui decimais
-    has_decimals = False
-    if not serie_cm.empty and serie_cm.notna().any():
-        # diferença do valor para o inteiro mais próximo
-        has_decimals = (np.abs(serie_cm.dropna() - np.round(serie_cm.dropna())) > 1e-9).any()
-
-    cota_format = "%.2f" if has_decimals else "%.0f"
-    cota_step   = 0.01 if has_decimals else 1.0
-
-    val_cota_cm = st.number_input(
+    # Entrada DIGITÁVEL que aceita vírgula (ex.: 143,22)
+    val_cota_cm_txt = st.text_input(
         "Cota (cm)",
-        value=None,
-        step=cota_step,
-        format=cota_format,
-        help="Digite no mesmo padrão da planilha para filtrar exatamente os registros."
+        value="",
+        placeholder="ex.: 143,22",
+        help="Digite no mesmo padrão da planilha (vírgula como decimal, se houver)."
     )
 
 # =========================
@@ -204,12 +199,15 @@ if col_barrote and val_barrote is not None:
 if col_regua and val_regua is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
 
+# Cota (cm) digitada em BR: '143,22' => 143.22
+val_cota_cm = parse_br_number(val_cota_cm_txt)
 if val_cota_cm is not None:
     if col_cota_cm_col:
-        filtered = filtered[np.isclose(to_num(filtered[col_cota_cm_col]), float(val_cota_cm), atol=tol, rtol=0)]
+        # compara com arredondamento a 2 casas para coincidir com a planilha
+        filtered = filtered[to_num(filtered[col_cota_cm_col]).round(2) == round(val_cota_cm, 2)]
     elif col_cota_m_col:
-        # convertemos Cota (m) para cm para comparar com o valor digitado
-        filtered = filtered[np.isclose(to_num(filtered[col_cota_m_col]) * 100.0, float(val_cota_cm), atol=tol, rtol=0)]
+        # se só existir Cota (m), convertemos m->cm para filtrar
+        filtered = filtered[(to_num(filtered[col_cota_m_col]) * 100.0).round(2) == round(val_cota_cm, 2)]
 
 # =========================
 # KPIs (pegam a 1ª linha dos dados filtrados)
