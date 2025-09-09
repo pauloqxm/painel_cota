@@ -119,7 +119,7 @@ st.markdown(
     """
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
-  preencha <b>Barrote</b>, <b>Régua (cm)</b> e selecione <b>Cota (cm)</b> para localizar a(s) linha(s) exata(s).
+  preencha <b>Barrote</b>, <b>Régua (cm)</b> e <b>Cota (cm)</b> (digitando) para localizar a(s) linha(s) exata(s).
   Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
@@ -164,29 +164,33 @@ with c1:
 with c2:
     val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
 
-# Cota (cm) com selectbox (type-ahead), mostrando exatamente os valores existentes
 with c3:
+    # Cota (cm) DIGITÁVEL com o MESMO PADRÃO da coluna Cota (cm).
+    # Se a base tiver Cota (cm), detectamos se tem decimais; se não, usamos 0 casas.
     if col_cota_cm_col:
-        cota_base = to_num(df[col_cota_cm_col])
+        serie_cm = to_num(df[col_cota_cm_col])
     elif col_cota_m_col:
-        # se só existir Cota (m), mostramos valores em cm para o filtro
-        cota_base = to_num(df[col_cota_m_col]) * 100.0
+        # se só existir Cota (m), convertemos para cm apenas para "espelhar" o padrão
+        serie_cm = to_num(df[col_cota_m_col]) * 100.0
     else:
-        cota_base = pd.Series(dtype=float)
+        serie_cm = pd.Series(dtype=float)
 
-    cota_opts = ["Todos"]
-    if not cota_base.empty:
-        # usamos inteiros em cm para evitar problemas de ponto flutuante
-        uniq = (
-            cota_base.dropna()
-                     .round(0)
-                     .astype(int)
-                     .unique()
-        )
-        uniq = sorted(uniq)
-        cota_opts += [str(v) for v in uniq]
+    # checa se a coluna possui decimais
+    has_decimals = False
+    if not serie_cm.empty and serie_cm.notna().any():
+        # diferença do valor para o inteiro mais próximo
+        has_decimals = (np.abs(serie_cm.dropna() - np.round(serie_cm.dropna())) > 1e-9).any()
 
-    sel_cota_cm_str = st.selectbox("Cota (cm)", options=cota_opts, index=0, help="Digite para filtrar e selecione um valor existente")
+    cota_format = "%.2f" if has_decimals else "%.0f"
+    cota_step   = 0.01 if has_decimals else 1.0
+
+    val_cota_cm = st.number_input(
+        "Cota (cm)",
+        value=None,
+        step=cota_step,
+        format=cota_format,
+        help="Digite no mesmo padrão da planilha para filtrar exatamente os registros."
+    )
 
 # =========================
 # Aplica filtros
@@ -200,13 +204,12 @@ if col_barrote and val_barrote is not None:
 if col_regua and val_regua is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
 
-if sel_cota_cm_str != "Todos":
-    sel_cota_cm = int(sel_cota_cm_str)
+if val_cota_cm is not None:
     if col_cota_cm_col:
-        filtered = filtered[to_num(filtered[col_cota_cm_col]).round(0) == sel_cota_cm]
+        filtered = filtered[np.isclose(to_num(filtered[col_cota_cm_col]), float(val_cota_cm), atol=tol, rtol=0)]
     elif col_cota_m_col:
-        # convertemos Cota (m) para cm para comparar com a seleção
-        filtered = filtered[(to_num(filtered[col_cota_m_col]) * 100.0).round(0) == sel_cota_cm]
+        # convertemos Cota (m) para cm para comparar com o valor digitado
+        filtered = filtered[np.isclose(to_num(filtered[col_cota_m_col]) * 100.0, float(val_cota_cm), atol=tol, rtol=0)]
 
 # =========================
 # KPIs (pegam a 1ª linha dos dados filtrados)
