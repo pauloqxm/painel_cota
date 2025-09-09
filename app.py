@@ -119,7 +119,7 @@ st.markdown(
     """
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
-  preencha <b>Barrote</b>, <b>Régua (cm)</b> e <b>Cota (cm)</b> para localizar a(s) linha(s) exata(s).
+  preencha <b>Barrote</b>, <b>Régua (cm)</b> e selecione <b>Cota (cm)</b> para localizar a(s) linha(s) exata(s).
   Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
@@ -140,16 +140,11 @@ if sel_res != "Todos":
     df = df[df[reservatorio_col].astype(str) == sel_res]
 
 # =========================
-# Entradas do usuário (opcionais)
+# Detecta colunas
 # =========================
-c1, c2, c3 = st.columns(3)
-with c1: val_barrote = st.number_input("Barrote", value=None, step=1.0, format="%.0f")
-with c2: val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
-with c3: val_cota_cm = st.number_input("Cota (cm)", value=None, step=1.0, format="%.0f")
-
-# nomes possíveis (detecção robusta)
 col_barrote = next((c for c in df.columns if c.lower().startswith("barrote")), None)
 col_regua   = next((c for c in df.columns if "régua" in c.lower() or "regua" in c.lower()), None)
+# Preferimos Cota (cm); se não existir, caímos para Cota (m)
 col_cota_cm_col = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(cm)","cotacm","cota cm"]), None)
 col_cota_m_col  = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(m)","cotam","cota m"]), None)
 col_vol     = next((c for c in df.columns if "volume (m3)" in c.lower() or "volume (m³)" in c.lower()), None)
@@ -159,16 +154,59 @@ if not all([col_vol, col_pct]):
     st.warning("Não encontrei as colunas 'Volume (m3)' e/ou 'Percentual'."); st.stop()
 
 # =========================
-# Filtragem pelos valores (entradas do usuário)
+# Widgets de filtro
+# =========================
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    val_barrote = st.number_input("Barrote", value=None, step=1.0, format="%.0f")
+
+with c2:
+    val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
+
+# Cota (cm) com selectbox (type-ahead), mostrando exatamente os valores existentes
+with c3:
+    if col_cota_cm_col:
+        cota_base = to_num(df[col_cota_cm_col])
+    elif col_cota_m_col:
+        # se só existir Cota (m), mostramos valores em cm para o filtro
+        cota_base = to_num(df[col_cota_m_col]) * 100.0
+    else:
+        cota_base = pd.Series(dtype=float)
+
+    cota_opts = ["Todos"]
+    if not cota_base.empty:
+        # usamos inteiros em cm para evitar problemas de ponto flutuante
+        uniq = (
+            cota_base.dropna()
+                     .round(0)
+                     .astype(int)
+                     .unique()
+        )
+        uniq = sorted(uniq)
+        cota_opts += [str(v) for v in uniq]
+
+    sel_cota_cm_str = st.selectbox("Cota (cm)", options=cota_opts, index=0, help="Digite para filtrar e selecione um valor existente")
+
+# =========================
+# Aplica filtros
 # =========================
 filtered = df.copy()
 tol = 1e-6
+
 if col_barrote and val_barrote is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_barrote]), val_barrote, atol=tol, rtol=0)]
+
 if col_regua and val_regua is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
-if col_cota_cm_col and val_cota_cm is not None:
-    filtered = filtered[np.isclose(to_num(filtered[col_cota_cm_col]), val_cota_cm, atol=tol, rtol=0)]
+
+if sel_cota_cm_str != "Todos":
+    sel_cota_cm = int(sel_cota_cm_str)
+    if col_cota_cm_col:
+        filtered = filtered[to_num(filtered[col_cota_cm_col]).round(0) == sel_cota_cm]
+    elif col_cota_m_col:
+        # convertemos Cota (m) para cm para comparar com a seleção
+        filtered = filtered[(to_num(filtered[col_cota_m_col]) * 100.0).round(0) == sel_cota_cm]
 
 # =========================
 # KPIs (pegam a 1ª linha dos dados filtrados)
@@ -198,43 +236,30 @@ with k3:
 # =========================
 # Tabela (copia exatamente da planilha, sem converter Cota)
 # =========================
-# Montamos as colunas na ordem pedida, mas só adicionamos as que existem na base
 desired_cols = ["Reservatório", "Barrote", "Régua (cm)", "Cota (m)", "Volume (m3)", "Percentual"]
-available = {c: c for c in filtered.columns}  # mapeamento original
+available = {c: c for c in filtered.columns}
 
-# Se não existir "Cota (m)" mas existir "Cota (cm)", usamos "Cota (cm)" no lugar (respeitando a base)
+# Se não existir "Cota (m)" mas existir "Cota (cm)", usamos "Cota (cm)"
 if "Cota (m)" not in available and col_cota_cm_col:
     desired_cols = ["Reservatório", "Barrote", "Régua (cm)", col_cota_cm_col, "Volume (m3)", "Percentual"]
 
 cols_to_show = [c for c in desired_cols if c in available]
 df_view_raw = filtered[cols_to_show].copy()
 
-# Formatação BR somente em view (Cota sem conversão; Volume inteiro; Percentual com %)
 def format_view(dfv: pd.DataFrame) -> pd.DataFrame:
     out = dfv.copy()
-
-    # Volume (m3)
     if "Volume (m3)" in out.columns:
         out["Volume (m3)"] = pd.to_numeric(out["Volume (m3)"], errors="coerce").apply(fmt_br_inteiro)
-
-    # Percentual
     if "Percentual" in out.columns:
         out["Percentual"] = pd.to_numeric(out["Percentual"], errors="coerce").apply(fmt_br_pct)
-
-    # Cota (m) se existir (copia da base, só formata casas decimais; sem conversão)
     if "Cota (m)" in out.columns:
         out["Cota (m)"] = pd.to_numeric(out["Cota (m)"], errors="coerce").apply(fmt_br_2casas)
-
-    # Ou Cota (cm), caso esteja assim na base
     if col_cota_cm_col and col_cota_cm_col in out.columns:
         out[col_cota_cm_col] = pd.to_numeric(out[col_cota_cm_col], errors="coerce").apply(fmt_br_2casas)
-
-    # Barrote / Régua (cm) como números sem casas
     if "Barrote" in out.columns:
-        out["Barrote"] = pd.to_numeric(out["Barrote"], errors="coerce").fillna(np.nan).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
+        out["Barrote"] = pd.to_numeric(out["Barrote"], errors="coerce").map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
     if "Régua (cm)" in out.columns:
-        out["Régua (cm)"] = pd.to_numeric(out["Régua (cm)"], errors="coerce").fillna(np.nan).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
-
+        out["Régua (cm)"] = pd.to_numeric(out["Régua (cm)"], errors="coerce").map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
     return out
 
 df_view = format_view(df_view_raw)
@@ -247,7 +272,6 @@ column_config = {
     "Volume (m3)": st.column_config.TextColumn("Volume (m3)"),
     "Percentual":  st.column_config.TextColumn("Percentual"),
 }
-# Se a base trouxe Cota (cm), configuramos essa coluna
 if col_cota_cm_col and col_cota_cm_col in df_view.columns:
     column_config[col_cota_cm_col] = st.column_config.TextColumn(col_cota_cm_col)
 
