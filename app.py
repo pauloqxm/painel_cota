@@ -28,7 +28,42 @@ h1,h2,h3 { color: var(--azul1); }
 """, unsafe_allow_html=True)
 
 # =========================
-# Helpers Sheets
+# Utilitários de número (padrão BR)
+# =========================
+def parse_br_series(s: pd.Series) -> pd.Series:
+    """Converte '1.234,56' -> 1234.56; remove %; lida com nulos."""
+    return (s.astype(str)
+             .str.replace(r"\s+", "", regex=True)
+             .str.replace("%", "", regex=False)
+             .str.replace(".", "", regex=False)
+             .str.replace(",", ".", regex=False)
+             .pipe(pd.to_numeric, errors="coerce"))
+
+def fmt_br_2casas(x):
+    if pd.isna(x): return "—"
+    return f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def fmt_br_inteiro(x):
+    if pd.isna(x): return "—"
+    return f"{float(x):,.0f}".replace(",", ".")
+
+def fmt_br_pct(x):
+    if pd.isna(x): return "—"
+    return f"{float(x):,.2f} %".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def parse_br_number(txt: str) -> float | None:
+    """'143,22' -> 143.22 | '1.234,5' -> 1234.5 | '' -> None"""
+    if txt is None: return None
+    s = str(txt).strip()
+    if s == "": return None
+    s = s.replace(" ", "").replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+# =========================
+# Download dos dados
 # =========================
 def _extract_file_id_and_gid(url: str):
     m = re.search(r"/d/([a-zA-Z0-9-_]+)/", url)
@@ -56,76 +91,17 @@ def load_data(sheet_url: str):
             r.raise_for_status()
             df = pd.read_csv(BytesIO(r.content), dtype=str)
             df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
-            
-            # CORREÇÃO: Converter colunas numéricas de forma mais robusta
-            for c in df.columns:
-                if re.search(r"(barrote|r[ée]gua|cota|volume|percentual|\(cm\)|\(m3\)|\(m³\))", c, re.IGNORECASE):
-                    # Primeiro tenta converter diretamente (para números já no formato correto)
-                    try:
-                        df[c] = pd.to_numeric(df[c], errors='ignore')
-                    except:
-                        # Se falhar, faz o tratamento de string
-                        s = (df[c].astype(str)
-                               .str.replace(".", "", regex=False)  # remove separador de milhar
-                               .str.replace(",", ".", regex=False)  # substitui vírgula por ponto decimal
-                               .str.replace("%", "", regex=False)
-                               .str.strip())
-                        df[c] = pd.to_numeric(s, errors="ignore")
             return df
         except Exception as e:
             last_err = e
-
-    # fallback local (opcional)
+    # fallback local
     try:
         df = pd.read_csv("/mnt/data/tabela_banabuiu_base.csv", dtype=str)
         df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
-        for c in df.columns:
-            if re.search(r"(barrote|r[ée]gua|cota|volume|percentual|\(cm\)|\(m3\)|\(m³\))", c, re.IGNORECASE):
-                s = (df[c].astype(str)
-                       .str.replace(".", "", regex=False)
-                       .str.replace(",", ".", regex=False)
-                       .str.replace("%", "", regex=False)
-                       .str.strip())
-                df[c] = pd.to_numeric(s, errors="ignore")
         return df
     except Exception:
         pass
-
     raise RuntimeError(f"Não foi possível baixar o CSV do Google Sheets. Último erro: {last_err}")
-
-# =========================
-# Formatações BR / utilitários
-# =========================
-def fmt_br_2casas(x):
-    if pd.isna(x): 
-        return "—"
-    return f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-def fmt_br_inteiro(x):
-    if pd.isna(x): 
-        return "—"
-    return f"{float(x):,.0f}".replace(",", ".")
-
-def fmt_br_pct(x):
-    if pd.isna(x):
-        return "—"
-    return f"{float(x):,.2f} %".replace(",", "X").replace(".", ",").replace("X", ".")
-
-def to_num(s):
-    return pd.to_numeric(s, errors="coerce")
-
-def parse_br_number(txt: str) -> float | None:
-    """Converte '143,22' ou '1.234,5' -> 143.22 / 1234.5. Retorna None se vazio/ inválido."""
-    if txt is None: 
-        return None
-    s = str(txt).strip()
-    if s == "": 
-        return None
-    s = s.replace(" ", "").replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return None
 
 # =========================
 # Carrega dados
@@ -138,105 +114,110 @@ st.markdown(
     """
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
-  preencha <b>Barrote</b>, <b>Régua (cm)</b> e digite <b>Cota (cm)</b> (ex.: 143,22) para localizar a(s) linha(s) exata(s).
+  preencha <b>Barrote</b>, <b>Régua (cm)</b> e digite <b>Cota (cm)</b> (ex.: 143,22).
   Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
 )
 
 # =========================
-# Filtro por Reservatório
+# Detecta colunas originais
 # =========================
 reservatorio_col = next((c for c in df_raw.columns if c.strip().lower().startswith("reservat")), None)
+col_barrote      = next((c for c in df_raw.columns if c.lower().startswith("barrote")), None)
+col_regua        = next((c for c in df_raw.columns if "régua" in c.lower() or "regua" in c.lower()), None)
+col_cota_cm_col  = next((c for c in df_raw.columns if re.sub(r"\s+", "", c.lower()) in ["cota(cm)","cotacm","cota cm"]), None)
+col_cota_m_col   = next((c for c in df_raw.columns if re.sub(r"\s+", "", c.lower()) in ["cota(m)","cotam","cota m"]), None)
+col_vol          = next((c for c in df_raw.columns if "volume (m3)" in c.lower() or "volume (m³)" in c.lower()), None)
+col_pct          = next((c for c in df_raw.columns if "percentual" in c.lower()), None)
+
 if not reservatorio_col:
     st.error("Não encontrei a coluna 'Reservatório' na planilha."); st.stop()
+if not all([col_vol, col_pct]):
+    st.error("Não encontrei as colunas 'Volume (m3)' e/ou 'Percentual'."); st.stop()
 
+# =========================
+# Cria colunas normalizadas para filtro (sem mexer na exibição)
+# =========================
+df_num = df_raw.copy()
+
+if col_barrote:
+    df_num["__barrote_num"] = parse_br_series(df_num[col_barrote])
+if col_regua:
+    df_num["__regua_num"] = parse_br_series(df_num[col_regua])
+
+# Cota: sempre em centímetros para filtro
+if col_cota_cm_col:
+    cota_cm_num = parse_br_series(df_num[col_cota_cm_col])
+elif col_cota_m_col:
+    cota_cm_num = parse_br_series(df_num[col_cota_m_col]) * 100.0
+else:
+    cota_cm_num = pd.Series(np.nan, index=df_num.index, dtype=float)
+
+df_num["__cota_cm_num"] = cota_cm_num
+# Versão string BR (2 casas) para casar com texto da planilha
+df_num["__cota_cm_str_br"] = df_num["__cota_cm_num"].round(2).apply(fmt_br_2casas)
+
+# Outras colunas numéricas para KPI
+df_num["__vol_num"] = parse_br_series(df_num[col_vol]) if col_vol else np.nan
+df_num["__pct_num"] = parse_br_series(df_num[col_pct]) if col_pct else np.nan
+
+# =========================
+# Filtros (widgets)
+# =========================
 reservatorios = ["Todos"] + sorted([r for r in df_raw[reservatorio_col].dropna().astype(str).unique()])
 sel_res = st.selectbox("Reservatório", options=reservatorios, index=0)
 
-df = df_raw.copy()
-if sel_res != "Todos":
-    df = df[df[reservatorio_col].astype(str) == sel_res]
-
-# =========================
-# Detecta colunas
-# =========================
-col_barrote = next((c for c in df.columns if c.lower().startswith("barrote")), None)
-col_regua   = next((c for c in df.columns if "régua" in c.lower() or "regua" in c.lower()), None)
-# Preferimos Cota (cm); se não existir, caímos para Cota (m)
-col_cota_cm_col = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(cm)","cotacm","cota cm"]), None)
-col_cota_m_col  = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(m)","cotam","cota m"]), None)
-col_vol     = next((c for c in df.columns if "volume (m3)" in c.lower() or "volume (m³)" in c.lower()), None)
-col_pct     = next((c for c in df.columns if "percentual" in c.lower()), None)
-
-if not all([col_vol, col_pct]):
-    st.warning("Não encontrei as colunas 'Volume (m3)' e/ou 'Percentual'."); st.stop()
-
-# DEBUG: Mostrar informações sobre as colunas encontradas
-st.sidebar.info(f"Colunas detectadas:\n- Barrote: {col_barrote}\n- Régua: {col_regua}\n- Cota cm: {col_cota_cm_col}\n- Cota m: {col_cota_m_col}\n- Volume: {col_vol}\n- Percentual: {col_pct}")
-
-# =========================
-# Widgets de filtro
-# =========================
 c1, c2, c3 = st.columns(3)
-
 with c1:
     val_barrote = st.number_input("Barrote", value=None, step=1.0, format="%.0f")
-
 with c2:
     val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
-
 with c3:
-    # Entrada DIGITÁVEL que aceita vírgula (ex.: 143,22)
-    val_cota_cm_txt = st.text_input(
-        "Cota (cm)",
-        value="",
-        placeholder="ex.: 143,22",
-        help="Digite no mesmo padrão da planilha (vírgula como decimal, se houver)."
-    )
+    val_cota_cm_txt = st.text_input("Cota (cm)", value="", placeholder="ex.: 143,22")
 
 # =========================
-# Aplica filtros - CORREÇÃO PRINCIPAL
+# Aplica filtros (numérico + string BR)
 # =========================
-filtered = df.copy()
-tol = 1e-6
+filtered_idx = pd.Series(True, index=df_num.index)
+
+if sel_res != "Todos":
+    filtered_idx &= (df_raw[reservatorio_col].astype(str) == sel_res)
+
+tol_abs = 0.005  # tolerância ~ meio centésimo de cm
 
 if col_barrote and val_barrote is not None:
-    filtered = filtered[np.isclose(to_num(filtered[col_barrote]), val_barrote, atol=tol, rtol=0)]
+    filtered_idx &= np.isfinite(df_num["__barrote_num"]) & np.isclose(df_num["__barrote_num"], float(val_barrote), atol=1e-9, rtol=0)
 
 if col_regua and val_regua is not None:
-    filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
+    filtered_idx &= np.isfinite(df_num["__regua_num"]) & np.isclose(df_num["__regua_num"], float(val_regua), atol=1e-9, rtol=0)
 
-# --- Filtro Cota (cm) CORRIGIDO ---
-val_cota_cm = parse_br_number(val_cota_cm_txt)
-if val_cota_cm is not None:
-    # DEBUG: Mostrar o valor convertido
-    st.sidebar.info(f"Valor convertido: {val_cota_cm}")
-    
-    if col_cota_cm_col:
-        # Garantir que a coluna está numérica
-        col_cota_numeric = to_num(filtered[col_cota_cm_col])
-        
-        # DEBUG: Mostrar alguns valores da coluna
-        st.sidebar.info(f"Valores na coluna {col_cota_cm_col}: {col_cota_numeric.head().tolist()}")
-        
-        # Busca com tolerância para arredondamentos
-        filtered = filtered[np.isclose(col_cota_numeric, val_cota_cm, atol=0.01, rtol=0)]
-        
-    elif col_cota_m_col:
-        # Se tiver apenas Cota (m), converte para cm para comparação
-        col_cota_numeric = to_num(filtered[col_cota_m_col]) * 100.0  # converte metros para centímetros
-        
-        # Busca o valor em cm (com tolerância)
-        filtered = filtered[np.isclose(col_cota_numeric, val_cota_cm, atol=0.01, rtol=0)]
+typed_cota_cm_num = parse_br_number(val_cota_cm_txt)
+if typed_cota_cm_num is not None:
+    # 1) Comparação numérica (com tolerância)
+    mask_num = np.isfinite(df_num["__cota_cm_num"]) & np.isclose(df_num["__cota_cm_num"], typed_cota_cm_num, atol=tol_abs, rtol=0)
+    # 2) Comparação por string BR (2 casas) — cobre quando a planilha guarda como texto
+    typed_cota_cm_str = fmt_br_2casas(typed_cota_cm_num)  # ex.: "143,22"
+    mask_str = (df_num["__cota_cm_str_br"] == typed_cota_cm_str)
+
+    # 3) Se a base só tiver Cota (m), também aceito que a pessoa digite em m por engano (m->cm)
+    mask_extra = False
+    if col_cota_m_col and not col_cota_cm_col:
+        typed_as_m_num = typed_cota_cm_num / 100.0  # cm->m
+        mask_extra = np.isfinite(df_num["__cota_cm_num"]) & np.isclose(df_num["__cota_cm_num"], typed_as_m_num * 100.0, atol=tol_abs, rtol=0)
+
+    filtered_idx &= (mask_num | mask_str | mask_extra)
+
+filtered_raw = df_raw[filtered_idx].copy()
+filtered_num = df_num[filtered_idx].copy()
 
 # =========================
-# KPIs (pegam a 1ª linha dos dados filtrados)
+# KPIs (1ª linha do resultado filtrado)
 # =========================
-if len(filtered):
-    first_row = filtered.iloc[0]
-    vol_val = to_num(first_row[col_vol])
-    pct_val = to_num(first_row[col_pct])
+if len(filtered_num):
+    first = filtered_num.iloc[0]
+    vol_val = first["__vol_num"]
+    pct_val = first["__pct_num"]
 else:
     vol_val = np.nan
     pct_val = np.nan
@@ -251,37 +232,36 @@ with k2:
 with k3:
     st.markdown(
         f'<div class="kpi"><div class="label">Registros encontrados</div>'
-        f'<div class="value">{len(filtered):,}</div></div>'.replace(",", "."),
+        f'<div class="value">{len(filtered_raw):,}</div></div>'.replace(",", "."),
         unsafe_allow_html=True
     )
 
 # =========================
-# Tabela (copia exatamente da planilha, sem converter Cota)
+# Tabela (copia da planilha, sem converter Cota)
 # =========================
 desired_cols = ["Reservatório", "Barrote", "Régua (cm)", "Cota (m)", "Volume (m3)", "Percentual"]
-available = {c: c for c in filtered.columns}
-
-# Se não existir "Cota (m)" mas existir "Cota (cm)", usamos "Cota (cm)"
+available = set(filtered_raw.columns)
 if "Cota (m)" not in available and col_cota_cm_col:
     desired_cols = ["Reservatório", "Barrote", "Régua (cm)", col_cota_cm_col, "Volume (m3)", "Percentual"]
 
 cols_to_show = [c for c in desired_cols if c in available]
-df_view_raw = filtered[cols_to_show].copy()
+df_view_raw = filtered_raw[cols_to_show].copy()
 
+# Formatação BR apenas para exibir
 def format_view(dfv: pd.DataFrame) -> pd.DataFrame:
     out = dfv.copy()
     if "Volume (m3)" in out.columns:
-        out["Volume (m3)"] = pd.to_numeric(out["Volume (m3)"], errors="coerce").apply(fmt_br_inteiro)
+        out["Volume (m3)"] = parse_br_series(out["Volume (m3)"]).apply(fmt_br_inteiro)
     if "Percentual" in out.columns:
-        out["Percentual"] = pd.to_numeric(out["Percentual"], errors="coerce").apply(fmt_br_pct)
+        out["Percentual"] = parse_br_series(out["Percentual"]).apply(fmt_br_pct)
     if "Cota (m)" in out.columns:
-        out["Cota (m)"] = pd.to_numeric(out["Cota (m)"], errors="coerce").apply(fmt_br_2casas)
+        out["Cota (m)"] = parse_br_series(out["Cota (m)"]).apply(fmt_br_2casas)
     if col_cota_cm_col and col_cota_cm_col in out.columns:
-        out[col_cota_cm_col] = pd.to_numeric(out[col_cota_cm_col], errors="coerce").apply(fmt_br_2casas)
+        out[col_cota_cm_col] = parse_br_series(out[col_cota_cm_col]).apply(fmt_br_2casas)
     if "Barrote" in out.columns:
-        out["Barrote"] = pd.to_numeric(out["Barrote"], errors="coerce").map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
+        out["Barrote"] = parse_br_series(out["Barrote"]).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
     if "Régua (cm)" in out.columns:
-        out["Régua (cm)"] = pd.to_numeric(out["Régua (cm)"], errors="coerce").map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
+        out["Régua (cm)"] = parse_br_series(out["Régua (cm)"]).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
     return out
 
 df_view = format_view(df_view_raw)
