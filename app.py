@@ -105,6 +105,9 @@ def fmt_br_pct(x):
         return "—"
     return f"{float(x):,.2f} %".replace(",", "X").replace(".", ",").replace("X", ".")
 
+def to_num(s):
+    return pd.to_numeric(s, errors="coerce")
+
 # =========================
 # Carrega dados
 # =========================
@@ -117,7 +120,7 @@ st.markdown(
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
   preencha <b>Barrote</b>, <b>Régua (cm)</b> e <b>Cota (cm)</b> para localizar a(s) linha(s) exata(s).
-  Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> do resultado filtrado.
+  Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
 )
@@ -137,17 +140,18 @@ if sel_res != "Todos":
     df = df[df[reservatorio_col].astype(str) == sel_res]
 
 # =========================
-# Entradas do usuário
+# Entradas do usuário (opcionais)
 # =========================
 c1, c2, c3 = st.columns(3)
 with c1: val_barrote = st.number_input("Barrote", value=None, step=1.0, format="%.0f")
 with c2: val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
-with c3: val_cota    = st.number_input("Cota (cm)", value=None, step=1.0, format="%.0f")
+with c3: val_cota_cm = st.number_input("Cota (cm)", value=None, step=1.0, format="%.0f")
 
-# nomes possíveis
+# nomes possíveis (detecção robusta)
 col_barrote = next((c for c in df.columns if c.lower().startswith("barrote")), None)
 col_regua   = next((c for c in df.columns if "régua" in c.lower() or "regua" in c.lower()), None)
-col_cota_cm = next((c for c in df.columns if c.lower().startswith("cota")), None)
+col_cota_cm_col = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(cm)","cotacm","cota cm"]), None)
+col_cota_m_col  = next((c for c in df.columns if re.sub(r"\s+", "", c.lower()) in ["cota(m)","cotam","cota m"]), None)
 col_vol     = next((c for c in df.columns if "volume (m3)" in c.lower() or "volume (m³)" in c.lower()), None)
 col_pct     = next((c for c in df.columns if "percentual" in c.lower()), None)
 
@@ -155,22 +159,27 @@ if not all([col_vol, col_pct]):
     st.warning("Não encontrei as colunas 'Volume (m3)' e/ou 'Percentual'."); st.stop()
 
 # =========================
-# Filtragem pelos valores
+# Filtragem pelos valores (entradas do usuário)
 # =========================
 filtered = df.copy()
 tol = 1e-6
 if col_barrote and val_barrote is not None:
-    filtered = filtered[np.isclose(pd.to_numeric(filtered[col_barrote], errors="coerce"), val_barrote, atol=tol, rtol=0)]
+    filtered = filtered[np.isclose(to_num(filtered[col_barrote]), val_barrote, atol=tol, rtol=0)]
 if col_regua and val_regua is not None:
-    filtered = filtered[np.isclose(pd.to_numeric(filtered[col_regua], errors="coerce"), val_regua, atol=tol, rtol=0)]
-if col_cota_cm and val_cota is not None:
-    filtered = filtered[np.isclose(pd.to_numeric(filtered[col_cota_cm], errors="coerce"), val_cota, atol=tol, rtol=0)]
+    filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
+if col_cota_cm_col and val_cota_cm is not None:
+    filtered = filtered[np.isclose(to_num(filtered[col_cota_cm_col]), val_cota_cm, atol=tol, rtol=0)]
 
 # =========================
-# KPIs (com BR e %)
+# KPIs (pegam a 1ª linha dos dados filtrados)
 # =========================
-vol_val = pd.to_numeric(filtered[col_vol], errors="coerce").mean() if len(filtered) else np.nan
-pct_val = pd.to_numeric(filtered[col_pct], errors="coerce").mean() if len(filtered) else np.nan
+if len(filtered):
+    first_row = filtered.iloc[0]
+    vol_val = to_num(first_row[col_vol])
+    pct_val = to_num(first_row[col_pct])
+else:
+    vol_val = np.nan
+    pct_val = np.nan
 
 k1, k2, k3 = st.columns([1,1,2])
 with k1:
@@ -187,41 +196,64 @@ with k3:
     )
 
 # =========================
-# Tabela (somente colunas pedidas + formatação BR)
+# Tabela (copia exatamente da planilha, sem converter Cota)
 # =========================
-data_num = {}
-data_num["Reservatório"] = filtered[reservatorio_col].astype(str) if reservatorio_col in filtered.columns else np.nan
-if col_barrote: data_num["Barrote"]     = pd.to_numeric(filtered[col_barrote], errors="coerce")
-if col_regua:   data_num["Régua (cm)"]  = pd.to_numeric(filtered[col_regua], errors="coerce")
-if col_cota_cm: data_num["Cota (m)"]    = pd.to_numeric(filtered[col_cota_cm], errors="coerce") / 100.0
-if col_vol:     data_num["Volume (m3)"] = pd.to_numeric(filtered[col_vol], errors="coerce")
-if col_pct:     data_num["Percentual"]  = pd.to_numeric(filtered[col_pct], errors="coerce")
+# Montamos as colunas na ordem pedida, mas só adicionamos as que existem na base
+desired_cols = ["Reservatório", "Barrote", "Régua (cm)", "Cota (m)", "Volume (m3)", "Percentual"]
+available = {c: c for c in filtered.columns}  # mapeamento original
 
-df_view_num = pd.DataFrame(
-    data_num,
-    columns=["Reservatório","Barrote","Régua (cm)","Cota (m)","Volume (m3)","Percentual"]
-)
+# Se não existir "Cota (m)" mas existir "Cota (cm)", usamos "Cota (cm)" no lugar (respeitando a base)
+if "Cota (m)" not in available and col_cota_cm_col:
+    desired_cols = ["Reservatório", "Barrote", "Régua (cm)", col_cota_cm_col, "Volume (m3)", "Percentual"]
 
-# Exibição em BR:
-df_view = df_view_num.copy()
-if "Cota (m)" in df_view:
-    df_view["Cota (m)"] = df_view_num["Cota (m)"].apply(fmt_br_2casas)
-if "Volume (m3)" in df_view:
-    df_view["Volume (m3)"] = df_view_num["Volume (m3)"].apply(fmt_br_inteiro)
-if "Percentual" in df_view:
-    df_view["Percentual"] = df_view_num["Percentual"].apply(fmt_br_pct)
+cols_to_show = [c for c in desired_cols if c in available]
+df_view_raw = filtered[cols_to_show].copy()
+
+# Formatação BR somente em view (Cota sem conversão; Volume inteiro; Percentual com %)
+def format_view(dfv: pd.DataFrame) -> pd.DataFrame:
+    out = dfv.copy()
+
+    # Volume (m3)
+    if "Volume (m3)" in out.columns:
+        out["Volume (m3)"] = pd.to_numeric(out["Volume (m3)"], errors="coerce").apply(fmt_br_inteiro)
+
+    # Percentual
+    if "Percentual" in out.columns:
+        out["Percentual"] = pd.to_numeric(out["Percentual"], errors="coerce").apply(fmt_br_pct)
+
+    # Cota (m) se existir (copia da base, só formata casas decimais; sem conversão)
+    if "Cota (m)" in out.columns:
+        out["Cota (m)"] = pd.to_numeric(out["Cota (m)"], errors="coerce").apply(fmt_br_2casas)
+
+    # Ou Cota (cm), caso esteja assim na base
+    if col_cota_cm_col and col_cota_cm_col in out.columns:
+        out[col_cota_cm_col] = pd.to_numeric(out[col_cota_cm_col], errors="coerce").apply(fmt_br_2casas)
+
+    # Barrote / Régua (cm) como números sem casas
+    if "Barrote" in out.columns:
+        out["Barrote"] = pd.to_numeric(out["Barrote"], errors="coerce").fillna(np.nan).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
+    if "Régua (cm)" in out.columns:
+        out["Régua (cm)"] = pd.to_numeric(out["Régua (cm)"], errors="coerce").fillna(np.nan).map(lambda x: f"{x:,.0f}".replace(",", ".") if pd.notna(x) else "—")
+
+    return out
+
+df_view = format_view(df_view_raw)
 
 st.subheader("Tabela filtrada")
+column_config = {
+    "Barrote":     st.column_config.TextColumn("Barrote"),
+    "Régua (cm)":  st.column_config.TextColumn("Régua (cm)"),
+    "Cota (m)":    st.column_config.TextColumn("Cota (m)"),
+    "Volume (m3)": st.column_config.TextColumn("Volume (m3)"),
+    "Percentual":  st.column_config.TextColumn("Percentual"),
+}
+# Se a base trouxe Cota (cm), configuramos essa coluna
+if col_cota_cm_col and col_cota_cm_col in df_view.columns:
+    column_config[col_cota_cm_col] = st.column_config.TextColumn(col_cota_cm_col)
+
 st.dataframe(
     df_view,
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "Barrote":     st.column_config.NumberColumn("Barrote", format="%.0f"),
-        "Régua (cm)":  st.column_config.NumberColumn("Régua (cm)", format="%.0f"),
-        # As três abaixo são strings já formatadas em BR (vírgula/ponto/%):
-        "Cota (m)":    st.column_config.TextColumn("Cota (m)"),
-        "Volume (m3)": st.column_config.TextColumn("Volume (m3)"),
-        "Percentual":  st.column_config.TextColumn("Percentual"),
-    },
+    column_config=column_config,
 )
