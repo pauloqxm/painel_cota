@@ -174,7 +174,7 @@ with c1:
 with c2:
     val_regua   = st.number_input("Régua (cm)", value=None, step=1.0, format="%.0f")
 with c3:
-    val_cota_cm_txt = st.text_input("Cota (cm)", value="", placeholder="ex.: 143,22")
+    val_cota_cm_txt = st.text_input("Cota (cm)", value="", placeholder="ex.: 143.22")
 
 # =========================
 # Aplica filtros (numérico + string BR)
