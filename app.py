@@ -88,7 +88,7 @@ def load_data(sheet_url: str):
     raise RuntimeError(f"Não foi possível baixar o CSV do Google Sheets. Último erro: {last_err}")
 
 # =========================
-# Formatação BR / utilitários
+# Formatações BR / utilitários
 # =========================
 def fmt_br_2casas(x):
     if pd.isna(x): 
@@ -115,7 +115,6 @@ def parse_br_number(txt: str) -> float | None:
     s = str(txt).strip()
     if s == "": 
         return None
-    # remove espaços, pontos de milhar e troca vírgula por ponto
     s = s.replace(" ", "").replace(".", "").replace(",", ".")
     try:
         return float(s)
@@ -199,15 +198,23 @@ if col_barrote and val_barrote is not None:
 if col_regua and val_regua is not None:
     filtered = filtered[np.isclose(to_num(filtered[col_regua]), val_regua, atol=tol, rtol=0)]
 
-# Cota (cm) digitada em BR: '143,22' => 143.22
+# --- Filtro Cota (cm) com vírgula e robusto a unidade (cm vs m) ---
 val_cota_cm = parse_br_number(val_cota_cm_txt)
 if val_cota_cm is not None:
     if col_cota_cm_col:
-        # compara com arredondamento a 2 casas para coincidir com a planilha
-        filtered = filtered[to_num(filtered[col_cota_cm_col]).round(2) == round(val_cota_cm, 2)]
+        s = to_num(filtered[col_cota_cm_col])  # já em cm
+        s_r2 = s.round(2)
+        # usuário pode ter digitado em cm (143,22) ou m por engano (-> *100)
+        targets = { round(val_cota_cm, 2), round(val_cota_cm * 100.0, 2) }
+        filtered = filtered[s_r2.isin(targets)]
     elif col_cota_m_col:
-        # se só existir Cota (m), convertemos m->cm para filtrar
-        filtered = filtered[(to_num(filtered[col_cota_m_col]) * 100.0).round(2) == round(val_cota_cm, 2)]
+        s_m = to_num(filtered[col_cota_m_col])          # em m
+        s_cm_r2 = (s_m * 100.0).round(2)
+        s_m_r2  = s_m.round(2)
+        target_cm = round(val_cota_cm, 2)               # assume entrada em cm
+        target_m  = round(val_cota_cm / 100.0, 2)       # fallback se entrada estiver em m
+        mask = (s_cm_r2 == target_cm) | (s_m_r2 == target_m)
+        filtered = filtered[mask]
 
 # =========================
 # KPIs (pegam a 1ª linha dos dados filtrados)
