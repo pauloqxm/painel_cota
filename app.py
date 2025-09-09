@@ -87,10 +87,23 @@ def load_data(sheet_url: str):
 
     raise RuntimeError(f"Não foi possível baixar o CSV do Google Sheets. Último erro: {last_err}")
 
-def fmt_number(x, is_percent=False):
-    if pd.isna(x): return "—"
-    if is_percent: return f"{float(x):,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
+# =========================
+# Formatações BR
+# =========================
+def fmt_br_2casas(x):
+    if pd.isna(x): 
+        return "—"
+    return f"{float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def fmt_br_inteiro(x):
+    if pd.isna(x): 
+        return "—"
     return f"{float(x):,.0f}".replace(",", ".")
+
+def fmt_br_pct(x):
+    if pd.isna(x):
+        return "—"
+    return f"{float(x):,.2f} %".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # =========================
 # Carrega dados
@@ -154,18 +167,18 @@ if col_cota_cm and val_cota is not None:
     filtered = filtered[np.isclose(pd.to_numeric(filtered[col_cota_cm], errors="coerce"), val_cota, atol=tol, rtol=0)]
 
 # =========================
-# KPIs
+# KPIs (com BR e %)
 # =========================
-vol_val = filtered[col_vol].astype(float).mean() if len(filtered) else np.nan
-pct_val = filtered[col_pct].astype(float).mean() if len(filtered) else np.nan
+vol_val = pd.to_numeric(filtered[col_vol], errors="coerce").mean() if len(filtered) else np.nan
+pct_val = pd.to_numeric(filtered[col_pct], errors="coerce").mean() if len(filtered) else np.nan
 
 k1, k2, k3 = st.columns([1,1,2])
 with k1:
     st.markdown('<div class="kpi"><div class="label">Volume (m³)</div>'
-                f'<div class="value">{fmt_number(vol_val)}</div></div>', unsafe_allow_html=True)
+                f'<div class="value">{fmt_br_inteiro(vol_val)}</div></div>', unsafe_allow_html=True)
 with k2:
     st.markdown('<div class="kpi"><div class="label">Percentual</div>'
-                f'<div class="value">{fmt_number(pct_val, is_percent=True)}</div></div>', unsafe_allow_html=True)
+                f'<div class="value">{fmt_br_pct(pct_val)}</div></div>', unsafe_allow_html=True)
 with k3:
     st.markdown(
         f'<div class="kpi"><div class="label">Registros encontrados</div>'
@@ -174,32 +187,29 @@ with k3:
     )
 
 # =========================
-# Tabela (somente colunas pedidas + formatação)
+# Tabela (somente colunas pedidas + formatação BR)
 # =========================
-# 1) montar colunas exibidas (com nomes padronizados)
-cols_display = []
-data = {}
+data_num = {}
+data_num["Reservatório"] = filtered[reservatorio_col].astype(str) if reservatorio_col in filtered.columns else np.nan
+if col_barrote: data_num["Barrote"]     = pd.to_numeric(filtered[col_barrote], errors="coerce")
+if col_regua:   data_num["Régua (cm)"]  = pd.to_numeric(filtered[col_regua], errors="coerce")
+if col_cota_cm: data_num["Cota (m)"]    = pd.to_numeric(filtered[col_cota_cm], errors="coerce") / 100.0
+if col_vol:     data_num["Volume (m3)"] = pd.to_numeric(filtered[col_vol], errors="coerce")
+if col_pct:     data_num["Percentual"]  = pd.to_numeric(filtered[col_pct], errors="coerce")
 
-# Reservatório
-data["Reservatório"] = filtered[reservatorio_col].astype(str) if reservatorio_col in filtered.columns else np.nan
+df_view_num = pd.DataFrame(
+    data_num,
+    columns=["Reservatório","Barrote","Régua (cm)","Cota (m)","Volume (m3)","Percentual"]
+)
 
-# Barrote
-if col_barrote: data["Barrote"] = pd.to_numeric(filtered[col_barrote], errors="coerce")
-
-# Régua (cm)
-if col_regua: data["Régua (cm)"] = pd.to_numeric(filtered[col_regua], errors="coerce")
-
-# Cota (m) = Cota (cm) / 100
-if col_cota_cm:
-    data["Cota (m)"] = pd.to_numeric(filtered[col_cota_cm], errors="coerce") / 100.0
-
-# Volume (m³)
-if col_vol: data["Volume (m³)"] = pd.to_numeric(filtered[col_vol], errors="coerce")
-
-# Percentual (com % na exibição)
-if col_pct: data["Percentual"] = pd.to_numeric(filtered[col_pct], errors="coerce")
-
-df_view = pd.DataFrame(data, columns=["Reservatório","Barrote","Régua (cm)","Cota (m)","Volume (m³)","Percentual"])
+# Exibição em BR:
+df_view = df_view_num.copy()
+if "Cota (m)" in df_view:
+    df_view["Cota (m)"] = df_view_num["Cota (m)"].apply(fmt_br_2casas)
+if "Volume (m3)" in df_view:
+    df_view["Volume (m3)"] = df_view_num["Volume (m3)"].apply(fmt_br_inteiro)
+if "Percentual" in df_view:
+    df_view["Percentual"] = df_view_num["Percentual"].apply(fmt_br_pct)
 
 st.subheader("Tabela filtrada")
 st.dataframe(
@@ -207,11 +217,11 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Barrote":      st.column_config.NumberColumn("Barrote", format="%.0f"),
-        "Régua (cm)":   st.column_config.NumberColumn("Régua (cm)", format="%.0f"),
-        "Cota (m)":     st.column_config.NumberColumn("Cota (m)", format="%.2f"),
-        "Volume (m³)":  st.column_config.NumberColumn("Volume (m³)", format="%.0f"),
-        # adiciona % após o valor
-        "Percentual":   st.column_config.NumberColumn("Percentual", format="%.2f %%"),
+        "Barrote":     st.column_config.NumberColumn("Barrote", format="%.0f"),
+        "Régua (cm)":  st.column_config.NumberColumn("Régua (cm)", format="%.0f"),
+        # As três abaixo são strings já formatadas em BR (vírgula/ponto/%):
+        "Cota (m)":    st.column_config.TextColumn("Cota (m)"),
+        "Volume (m3)": st.column_config.TextColumn("Volume (m3)"),
+        "Percentual":  st.column_config.TextColumn("Percentual"),
     },
 )
