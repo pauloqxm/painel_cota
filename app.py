@@ -51,11 +51,8 @@ def fmt_br_pct(x):
     if pd.isna(x): return "—"
     return f"{float(x):,.2f} %".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def to_num(s):
-    return pd.to_numeric(s, errors="coerce")
-
 def parse_br_number(txt: str) -> float | None:
-    """'143,22' -> 143.22 | '1.234,5' -> 1234.5"""
+    """'143,22' -> 143.22 | '1.234,5' -> 1234.5 | '' -> None"""
     if txt is None: return None
     s = str(txt).strip()
     if s == "": return None
@@ -97,7 +94,6 @@ def load_data(sheet_url: str):
             return df
         except Exception as e:
             last_err = e
-
     # fallback local
     try:
         df = pd.read_csv("/mnt/data/tabela_banabuiu_base.csv", dtype=str)
@@ -105,7 +101,6 @@ def load_data(sheet_url: str):
         return df
     except Exception:
         pass
-
     raise RuntimeError(f"Não foi possível baixar o CSV do Google Sheets. Último erro: {last_err}")
 
 # =========================
@@ -119,7 +114,7 @@ st.markdown(
     """
 <div class="info">
   <b>Como usar:</b> escolha um <i>Reservatório</i> no filtro e, se quiser,
-  preencha <b>Barrote</b>, <b>Régua (cm)</b> e digite <b>Cota (cm)</b> (ex.: 143,22) para localizar a(s) linha(s) exata(s).
+  preencha <b>Barrote</b>, <b>Régua (cm)</b> e digite <b>Cota (cm)</b> (ex.: 143,22).
   Os cartões exibem <i>Volume (m³)</i> e <i>Percentual</i> da primeira linha dos dados filtrados.
 </div>
 """, unsafe_allow_html=True
@@ -142,7 +137,7 @@ if not all([col_vol, col_pct]):
     st.error("Não encontrei as colunas 'Volume (m3)' e/ou 'Percentual'."); st.stop()
 
 # =========================
-# Cria colunas numéricas NORMALIZADAS (para filtrar)
+# Cria colunas normalizadas para filtro (sem mexer na exibição)
 # =========================
 df_num = df_raw.copy()
 
@@ -151,14 +146,19 @@ if col_barrote:
 if col_regua:
     df_num["__regua_num"] = parse_br_series(df_num[col_regua])
 
-# Normaliza Cota em CM para filtro (sem mexer no que será exibido na tabela)
+# Cota: sempre em centímetros para filtro
 if col_cota_cm_col:
-    df_num["__cota_cm_num"] = parse_br_series(df_num[col_cota_cm_col])  # já em cm
+    cota_cm_num = parse_br_series(df_num[col_cota_cm_col])
 elif col_cota_m_col:
-    df_num["__cota_cm_num"] = parse_br_series(df_num[col_cota_m_col]) * 100.0  # m -> cm
+    cota_cm_num = parse_br_series(df_num[col_cota_m_col]) * 100.0
 else:
-    df_num["__cota_cm_num"] = np.nan
+    cota_cm_num = pd.Series(np.nan, index=df_num.index, dtype=float)
 
+df_num["__cota_cm_num"] = cota_cm_num
+# Versão string BR (2 casas) para casar com texto da planilha
+df_num["__cota_cm_str_br"] = df_num["__cota_cm_num"].round(2).apply(fmt_br_2casas)
+
+# Outras colunas numéricas para KPI
 df_num["__vol_num"] = parse_br_series(df_num[col_vol]) if col_vol else np.nan
 df_num["__pct_num"] = parse_br_series(df_num[col_pct]) if col_pct else np.nan
 
@@ -177,14 +177,14 @@ with c3:
     val_cota_cm_txt = st.text_input("Cota (cm)", value="", placeholder="ex.: 143,22")
 
 # =========================
-# Aplica filtros (usando as colunas normalizadas)
+# Aplica filtros (numérico + string BR)
 # =========================
 filtered_idx = pd.Series(True, index=df_num.index)
 
 if sel_res != "Todos":
     filtered_idx &= (df_raw[reservatorio_col].astype(str) == sel_res)
 
-tol_abs = 0.005  # ~meio centésimo de cm
+tol_abs = 0.005  # tolerância ~ meio centésimo de cm
 
 if col_barrote and val_barrote is not None:
     filtered_idx &= np.isfinite(df_num["__barrote_num"]) & np.isclose(df_num["__barrote_num"], float(val_barrote), atol=1e-9, rtol=0)
@@ -192,11 +192,21 @@ if col_barrote and val_barrote is not None:
 if col_regua and val_regua is not None:
     filtered_idx &= np.isfinite(df_num["__regua_num"]) & np.isclose(df_num["__regua_num"], float(val_regua), atol=1e-9, rtol=0)
 
-# Cota (cm) digitada com vírgula/dot
-typed_cota_cm = parse_br_number(val_cota_cm_txt)
-if typed_cota_cm is not None:
-    # compara com tolerância (2 casas ~ 0,01 → usamos 0,005)
-    filtered_idx &= np.isfinite(df_num["__cota_cm_num"]) & np.isclose(df_num["__cota_cm_num"], typed_cota_cm, atol=tol_abs, rtol=0)
+typed_cota_cm_num = parse_br_number(val_cota_cm_txt)
+if typed_cota_cm_num is not None:
+    # 1) Comparação numérica (com tolerância)
+    mask_num = np.isfinite(df_num["__cota_cm_num"]) & np.isclose(df_num["__cota_cm_num"], typed_cota_cm_num, atol=tol_abs, rtol=0)
+    # 2) Comparação por string BR (2 casas) — cobre quando a planilha guarda como texto
+    typed_cota_cm_str = fmt_br_2casas(typed_cota_cm_num)  # ex.: "143,22"
+    mask_str = (df_num["__cota_cm_str_br"] == typed_cota_cm_str)
+
+    # 3) Se a base só tiver Cota (m), também aceito que a pessoa digite em m por engano (m->cm)
+    mask_extra = False
+    if col_cota_m_col and not col_cota_cm_col:
+        typed_as_m_num = typed_cota_cm_num / 100.0  # cm->m
+        mask_extra = np.isfinite(df_num["__cota_cm_num"]) & np.isclose(df_num["__cota_cm_num"], typed_as_m_num * 100.0, atol=tol_abs, rtol=0)
+
+    filtered_idx &= (mask_num | mask_str | mask_extra)
 
 filtered_raw = df_raw[filtered_idx].copy()
 filtered_num = df_num[filtered_idx].copy()
